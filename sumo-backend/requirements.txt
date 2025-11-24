@@ -1,0 +1,6 @@
+fastapi
+uvicorn[standard]
+supabase
+requests
+pydantic
+python-socketio
