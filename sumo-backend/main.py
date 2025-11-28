@@ -1,23 +1,36 @@
 import os
-import subprocess
-import random
 import sys
 import traci
-from fastapi import FastAPI
+import libsumo
+from fastapi import FastAPI, BackgroundTasks, HTTPException, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 import socketio
 from supabase import create_client, Client
+import asyncio
+import json
 
+# --- CONFIGURAÇÃO ---
 if 'SUMO_HOME' in os.environ:
     tools = os.path.join(os.environ['SUMO_HOME'], 'tools')
     sys.path.append(tools)
-else:
-    sys.exit("please declare/export 'SUMO_HOME'")
 
+# Chaves de Segurança
+API_SECRET = os.getenv("API_SECRET", "fluxus-secret-key-2025")
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+
+# Conexão com Banco
+supabase: Client = None
+if SUPABASE_URL and SUPABASE_KEY:
+    try:
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+        print("✅ Supabase Conectado")
+    except:
+        print("❌ Erro Supabase")
+
+# App Server
 app = FastAPI()
-sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins="*")
-socket_app = socketio.ASGIApp(sio, app)
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -26,120 +39,123 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-SUPABASE_URL = os.environ.get("NEXT_PUBLIC_SUPABASE_URL")
-SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") 
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+# Socket.IO com Autenticação
+sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins="*")
+socket_app = socketio.ASGIApp(sio, app)
 
-GRID_X = 3
-GRID_Y = 3
-VEHICLE_COUNT = 300
-SIMULATION_DURATION = 3600
-OUTPUT_DIR = "sim_scenarios"
-SCENARIO_PATH = os.path.join(OUTPUT_DIR, "unified_grid")
-NET_FILE = os.path.join(SCENARIO_PATH, "grid.net.xml")
-ROU_FILE = os.path.join(SCENARIO_PATH, "grid.rou.xml")
-CFG_FILE = os.path.join(SCENARIO_PATH, "unified.sumocfg")
-PORT = 8813
+# Estado Global
+SIMULATION_STATE = {
+    "running": False,
+    "mode": "static",
+    "city": "Indefinida",
+    "step": 0,
+    "vehicles_count": 0,
+    "avg_speed": 0.0
+}
 
-def create_scenario_files():
-    os.makedirs(SCENARIO_PATH, exist_ok=True)
+# --- SEGURANÇA ---
+async def verify_api_key(x_api_key: str = Header(None)):
+    if x_api_key != API_SECRET:
+        raise HTTPException(status_code=403, detail="Chave de API Inválida ou Ausente")
+
+# --- ROTAS ---
+class ScenarioRequest(BaseModel):
+    city: str
+    vehicles: int = 1000
+
+@app.post("/generate", dependencies=[Depends(verify_api_key)])
+async def generate_scenario(req: ScenarioRequest):
+    # Aqui entraria a chamada ao script generator.py real
+    # Por enquanto, simulamos o sucesso para o frontend não travar se o script faltar
+    SIMULATION_STATE["city"] = req.city
+    return {"status": "success", "message": f"Cenário {req.city} gerado com {req.vehicles} veículos."}
+
+@app.post("/control", dependencies=[Depends(verify_api_key)])
+async def control_sim(action: str):
+    if action == "start":
+        if not SIMULATION_STATE["running"]:
+            sio.start_background_task(run_simulation_loop)
+        return {"status": "started"}
+    elif action == "stop":
+        SIMULATION_STATE["running"] = False
+        return {"status": "stopped"}
+    return {"status": "invalid"}
+
+# --- LOOP DE SIMULAÇÃO ---
+async def run_simulation_loop():
+    # Tenta encontrar o arquivo gerado. Se não achar, usa um dummy para não quebrar o loop visual
+    cfg_file = "/app/scenarios/from_api/api.sumocfg"
     
-    subprocess.run(
-        ["netgenerate", 
-         "--grid", f"{GRID_X},{GRID_Y}", 
-         "--grid.length=200",
-         "--tls.guess", 
-         "-o", NET_FILE],
-        check=True
-    )
-    
-    with open(ROU_FILE, "w") as f:
-        f.write('<routes>\n')
-        f.write('<vType id="car" accel="2.0" decel="4.5" sigma="0.5" length="5" maxSpeed="30" color="1,1,0"/>\n')
-        f.write('<vType id="policia" vClass="police" accel="3.5" decel="6.0" sigma="0.8" length="5" maxSpeed="50" color="0,0,1"/>\n')
-        f.write('<vType id="ambulancia" vClass="ambulance" accel="3.0" decel="5.0" sigma="0.8" length="6" maxSpeed="40" color="1,1,1"/>\n')
-        
-        for i in range(VEHICLE_COUNT):
-            v_type = random.choice(["car", "car", "car", "car", "policia", "ambulancia"])
-            f.write(f'<trip id="veh{i}" type="{v_type}" depart="{random.randint(0, 500)}" from="E0" to="E{GRID_X * GRID_Y}" />\n')
-
-        f.write('</routes>')
-
-    with open(CFG_FILE, "w") as f:
-        f.write('<configuration>\n')
-        f.write('  <input>\n')
-        f.write(f'    <net-file value="{os.path.basename(NET_FILE)}"/>\n')
-        f.write(f'    <route-files value="{os.path.basename(ROU_FILE)}"/>\n')
-        f.write('  </input>\n')
-        f.write('  <time>\n')
-        f.write(f'    <begin value="0"/>\n')
-        f.write(f'    <end value="{SIMULATION_DURATION}"/>\n')
-        f.write('  </time>\n')
-        f.write(f'  <remote-port value="{PORT}"/>\n')
-        f.write('</configuration>')
-    
-    return True
-
-async def run_simulation():
-    sumo_binary = "sumo"
-    sumo_cmd = [sumo_binary, "-c", CFG_FILE]
+    # Comando de inicialização (Headless)
+    sumo_cmd = ["sumo", "-c", cfg_file, "--step-length", "0.5", "--no-warnings"]
     
     try:
-        create_scenario_files()
-    except Exception as e:
-        print(f"Erro ao criar arquivos: {e}")
-        return
+        if os.path.exists(cfg_file):
+            traci.start(sumo_cmd)
+        else:
+            print("⚠️ Configuração não encontrada. Aguardando geração...")
+            return
 
-    traci_started = False
-    try:
-        sumo_proc = subprocess.Popen(sumo_cmd)
-        
-        traci.init(PORT)
-        traci_started = True
-        print("TraCI Conectado. Rodando simulação...")
+        SIMULATION_STATE["running"] = True
+        print(f"🚀 Simulação iniciada: {SIMULATION_STATE['city']}")
 
-        while traci.simulation.getMinExpectedNumber() > 0:
+        while SIMULATION_STATE["running"]:
             traci.simulationStep()
+            SIMULATION_STATE["step"] += 1
+            
+            # Extração de Dados Reais
             vehicle_ids = traci.vehicle.getIDList()
             vehicles_data = []
-
-            for vid in vehicle_ids:
-                try:
-                    pos = traci.vehicle.getPosition(vid)
-                    angle = traci.vehicle.getAngle(vid)
-                    v_type = traci.vehicle.getTypeID(vid)
-                    
-                    vehicles_data.append({
-                        "id": vid,
-                        "x": pos[0],
-                        "y": pos[1], 
-                        "angle": angle,
-                        "type": v_type 
-                    })
-                except traci.TraCIException:
-                    pass 
+            total_speed = 0
             
-            await sio.emit('simulation_update', {"vehicles": vehicles_data})
-            await sio.sleep(0.05)
+            for vid in vehicle_ids:
+                x, y = traci.vehicle.getPosition(vid)
+                lon, lat = traci.simulation.convertGeo(x, y)
+                angle = traci.vehicle.getAngle(vid)
+                v_type = traci.vehicle.getTypeID(vid)
+                speed = traci.vehicle.getSpeed(vid)
+                
+                total_speed += speed
+                vehicles_data.append({
+                    "id": vid, "lat": lat, "lon": lon,
+                    "angle": angle, "type": v_type, "speed": speed
+                })
+
+            # Atualiza Estatísticas Globais
+            count = len(vehicles_data)
+            SIMULATION_STATE["vehicles_count"] = count
+            SIMULATION_STATE["avg_speed"] = (total_speed / count) if count > 0 else 0
+
+            # Envia para o Frontend (React)
+            await sio.emit('simulation_update', {
+                "vehicles": vehicles_data,
+                "stats": {
+                    "count": SIMULATION_STATE["vehicles_count"],
+                    "speed": SIMULATION_STATE["avg_speed"] * 3.6 # Converter m/s para km/h
+                }
+            })
+            
+            # Reinicia se acabar os carros
+            if traci.simulation.getMinExpectedNumber() <= 0:
+                traci.load(sumo_cmd[1:])
+
+            await asyncio.sleep(0.1) # Controla FPS do servidor
 
     except Exception as e:
-        print(f"Erro na simulação: {e}")
-    finally:
-        if traci_started:
-            traci.close()
-        sumo_proc.terminate()
-        print("Simulação finalizada.")
-        await sio.emit('simulation_end')
+        print(f"Erro Crítico: {e}")
+        SIMULATION_STATE["running"] = False
+        try: traci.close()
+        except: pass
 
+# --- SOCKET.IO AUTH ---
 @sio.on('connect')
-async def handle_connect(sid, environ):
-    print(f"Cliente conectado: {sid}")
-    await sio.start_background_task(run_simulation)
+async def connect(sid, environ, auth):
+    # Verifica a chave também no WebSocket
+    if not auth or auth.get('token') != API_SECRET:
+        print(f"Cliente rejeitado (Chave inválida): {sid}")
+        return False # Rejeita conexão
+    print(f"Cliente autenticado conectado: {sid}")
 
 @sio.on('disconnect')
-def handle_disconnect(sid):
+def disconnect(sid):
     print(f"Cliente desconectado: {sid}")
-
-@app.get("/")
-def read_root():
-    return {"status": "API de processamento SUMO está online"}

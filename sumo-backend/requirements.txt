@@ -4,3 +4,6 @@ supabase
 requests
 pydantic
 python-socketio
+traci
+libsumo
+python-dotenv
