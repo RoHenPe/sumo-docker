@@ -1,8 +1,10 @@
 fastapi
-uvicorn[standard]
+uvicorn
 supabase
-requests
-pydantic
-python-socketio
+PyGithub
 traci
-python-dotenv
+sumolib
+osmnx
+pydantic
+requests
+scipy

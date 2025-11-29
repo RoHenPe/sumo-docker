@@ -20,7 +20,7 @@ class SupabaseLogger:
         # 2. Envia para o Supabase (em uma thread separada para não travar a simulação)
         def _send():
             try:
-                self.supabase.table("application_logs").insert({
+                self.supabase.table("simulation_logs").insert({
                     "nivel": level,
                     "modulo": self.module,
                     "mensagem": str(message),

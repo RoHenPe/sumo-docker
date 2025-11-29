@@ -1,12 +1,14 @@
-version: '3.8'
-
 services:
   sumo-backend:
+    # --- CORREÇÃO DO NOME ---
+    # Isso força o container a se chamar apenas "sumo-backend"
+    container_name: sumo-backend
+    
     build: ./sumo-backend
     ports:
       - "5000:5000"
     volumes:
-      - ./scenarios
+      - ./scenarios:/app/scenarios
     env_file:
       - .env
     environment:
