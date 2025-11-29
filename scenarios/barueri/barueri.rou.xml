@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 
-<!-- generated on 2025-11-29 23:16:52.580322 by Eclipse SUMO randomTrips.py UNKNOWN
+<!-- generated on 2025-11-29 23:29:57.073072 by Eclipse SUMO randomTrips.py UNKNOWN
 <configuration>
     <net-file value="/app/scenarios/simulacao.net.xml"/>
     <route-file value="/app/scenarios/simulacao.rou.xml"/>
@@ -9,7 +9,7 @@
 </configuration>
 -->
 
-<!-- generated on 2025-11-29T23:16:52.297247+00:00 by Eclipse SUMO duarouter 1.25.0
+<!-- generated on 2025-11-29T23:29:56.903061+00:00 by Eclipse SUMO duarouter 1.25.0
 <duarouterConfiguration xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/duarouterConfiguration.xsd">
 
     <input>
