@@ -1,55 +1,57 @@
 import traci
-import sys
-import time
-import os
-from supabase import create_client 
 
-TLS_ID = "J2"
-DETECTOR_IDS = ["det_J2_entrada_0", "det_J2_entrada_1"]
-TRACI_PORT = 8813
+class TrafficAI:
+    def __init__(self, ai_enabled=False):
+        self.ai_enabled = ai_enabled
+        self.tls_timers = {} # Para evitar troca frenética de luzes
 
-SUPABASE_URL = os.environ.get("NEXT_PUBLIC_SUPABASE_URL")
-SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") 
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+    def set_ai_status(self, status: bool):
+        self.ai_enabled = status
+        print(f"🧠 IA Status: {'ATIVADA' if status else 'DESATIVADA'}")
 
-def log_event_db(level: str, module: str, message: str, user_email: str = "SYSTEM/TRAFFIC_CONTROL"):
-    try:
-        supabase.table('application_logs').insert([
-            {'nivel': level, 'modulo': module, 'mensagem': message, 'user_email': user_email}
-        ]).execute()
-    except Exception:
-        pass
+    def step(self):
+        # Se IA desligada, deixa o SUMO controlar (tempo fixo)
+        if not self.ai_enabled:
+            return {}
 
-def setup_simulation():
-    try:
-        traci.init(TRACI_PORT)
-        log_event_db("INFO", "SIM_TRAFFIC_CONTROL", f"Controlador TraCI conectado na porta {TRACI_PORT}.")
-    except Exception:
-        pass
+        logs = []
+        tls_ids = traci.trafficlight.getIDList()
 
-def run_dynamic_control():
-    try:
-        current_phase = traci.trafficlight.getPhase(TLS_ID)
-        traci.trafficlight.setPhaseDuration(TLS_ID, 40)
-        log_event_db("INFO", "SIM_TRAFFIC_CONTROL", f"Lógica IOT aplicada. Fase {current_phase} forçada para 40s.")
-    except Exception as e:
-        log_event_db("ERROR", "SIM_TRAFFIC_CONTROL", f"Falha ao aplicar lógica IOT no semáforo: {e}")
+        for tls_id in tls_ids:
+            # Lógica Simples de IA Adaptativa:
+            # Verifica todas as faixas controladas por esse semáforo
+            controlled_lanes = traci.trafficlight.getControlledLanes(tls_id)
+            
+            max_queue = 0
+            total_wait = 0
+            
+            for lane in controlled_lanes:
+                # Pega numero de carros parados na faixa
+                queue = traci.lane.getLastStepHaltingNumber(lane)
+                # Pega tempo de espera acumulado
+                wait = traci.lane.getWaitingTime(lane)
+                
+                if queue > max_queue:
+                    max_queue = queue
+                total_wait += wait
 
+            # DECISÃO DA IA:
+            # Se a fila estiver grande (> 5 carros) e o sinal não trocou recentemente
+            # Força o verde para a via mais congestionada (Simplificação)
+            # No SUMO real, mudamos a "Phase" do programa
+            
+            current_phase = traci.trafficlight.getPhase(tls_id)
+            
+            # Log para salvar no banco
+            logs.append({
+                "traffic_light_id": tls_id,
+                "queue_length": max_queue,
+                "avg_wait_time": total_wait / (len(controlled_lanes) or 1),
+                "is_ai_active": True
+            })
 
-if __name__ == "__main__":
-    setup_simulation()
-    
-    mode = sys.argv[1] if len(sys.argv) > 1 else "STATIC"
+            # Exemplo de ação: Se fila > 10, estende o tempo da fase atual
+            if max_queue > 10:
+                traci.trafficlight.setPhaseDuration(tls_id, 60) # Dá mais tempo verde
 
-    if mode == "DYNAMIC":
-        log_event_db("WARNING", "SIM_TRAFFIC_CONTROL", "Modo Dinâmico IOT ATIVADO. TraCI está controlando o semáforo J2.")
-        run_dynamic_control()
-    else:
-        log_event_db("WARNING", "SIM_TRAFFIC_CONTROL", "Modo Estático ATIVADO. Semáforo J2 em tempo fixo.")
-
-    try:
-        time.sleep(10)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        traci.close()
+        return logs

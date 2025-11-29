@@ -1,21 +1,21 @@
-FROM ghcr.io/eclipse-sumo/sumo:main
+FROM ghcr.io/eclipse-sumo/sumo:latest
 
-# Instala Python e Pip
 USER root
-RUN apt-get update && apt-get install -y python3 python3-pip
+# Instala Python, Pip e bibliotecas espaciais necessárias para o OSMNX
+RUN apt-get update && apt-get install -y \
+    python3 python3-pip \
+    libspatialindex-dev \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Instala dependências
 COPY requirements.txt .
+# Atualiza pip e instala dependências
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-# Copia o código do backend
 COPY . .
 
-# A porta 5000 será usada para o Socket.IO/FastAPI
 EXPOSE 5000
 
-# Inicia o servidor
 CMD ["uvicorn", "main:socket_app", "--host", "0.0.0.0", "--port", "5000", "--reload"]

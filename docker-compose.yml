@@ -6,18 +6,9 @@ services:
     ports:
       - "5000:5000"
     volumes:
-      # Mapeia a pasta de cenários para persistência
-      - ../sumo-beck/sumo-beck-main/scenarios:/app/scenarios
+      - ./scenarios
+    env_file:
+      - .env
     environment:
-      # Chaves do Banco de Dados
-      - SUPABASE_URL=${SUPABASE_URL}
-      - SUPABASE_KEY=${SUPABASE_KEY}
-      
-      # Chave de Segurança (O site terá que enviar essa senha para falar com o Docker)
-      - API_SECRET=fluxus-secret-key-2025
-      
-      # Chave da Inteligência Artificial (Para o modo adaptativo)
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      
       - SUMO_HOME=/usr/share/sumo
     restart: always

@@ -1,1 +1,8 @@
+.env
+.env.docker
 .venv/
+pycache/
+*.pyc
+scenarios/
+output/
+temp_error.log
