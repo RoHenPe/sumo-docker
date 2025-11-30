@@ -5,12 +5,13 @@ title FLUXUS MANAGER [Safe Generation]
 color 0F
 
 :: =========================================================
-::  1. CONFIGURAÇÕES
+::  1. CONFIGURAÇÕES
 :: =========================================================
 set "BASE_DIR=%~dp0"
 if "%BASE_DIR:~-1%"=="\" set "BASE_DIR=%BASE_DIR:~0,-1%"
 
-set "VENV_PYTHON=%BASE_DIR%\sumo-backend\venv\Scripts\python.exe"
+set "VENV_DIR=%BASE_DIR%\sumo-backend\venv"
+set "VENV_PYTHON=%VENV_DIR%\Scripts\python.exe"
 set "BOOT_LOGGER=%BASE_DIR%\boot_logger.py"
 set "DB_PATCHER=%BASE_DIR%\db_patcher.py"
 set "DOCKER_EXE=C:\Program Files\Docker\Docker\Docker Desktop.exe"
@@ -18,11 +19,81 @@ set "DOCKER_EXE=C:\Program Files\Docker\Docker\Docker Desktop.exe"
 set "LOG_DIR=%BASE_DIR%\scenarios\logs"
 set "LOCAL_LOG=%LOG_DIR%\controlador.log"
 
+:: --- CONFIGURAÇÃO FRONT-END ---
+set "FRONT_PATH=C:\UNIP\site-web"
+:: ------------------------------
+
 if not exist "%LOG_DIR%" mkdir "%LOG_DIR%"
 echo [INIT] Sessao iniciada > "%LOCAL_LOG%"
 
 :: =========================================================
-::  2. GERAR FERRAMENTAS (SEM BLOCOS - EVITA ERRO DE SINTAXE)
+::  2. VERIFICA E INSTALA VENV 
+:: =========================================================
+if not exist "%VENV_DIR%" (
+    echo.
+    echo =========================================
+    echo  [!] Venv nao encontrado. Instalando...
+    echo =========================================
+    echo.
+    call :REGISTER_LOG "INFO" "Venv ausente. Iniciando instalacao..."
+
+    :: Assume-se que o Python (fora do venv) esta no PATH
+    python -m pip install --upgrade pip virtualenv >> "%LOCAL_LOG%" 2>&1
+    if errorlevel 1 (
+        echo [ERRO CRITICO] Falha ao instalar virtualenv. Verifique o PATH do Python.
+        call :REGISTER_LOG "CRITICAL" "Falha ao instalar virtualenv."
+        pause
+        exit /b
+    )
+
+    :: Cria o ambiente virtual na pasta
+    python -m venv "%VENV_DIR%" >> "%LOCAL_LOG%" 2>&1
+    if errorlevel 1 (
+        echo [ERRO CRITICO] Falha ao criar o venv em "%VENV_DIR%".
+        call :REGISTER_LOG "CRITICAL" "Falha ao criar venv."
+        pause
+        exit /b
+    )
+    
+    :: Ativa e instala dependencias (se requirements.txt existir)
+    set "REQUIREMENTS_PATH=%BASE_DIR%\sumo-backend\requirements.txt"
+
+    if exist "%REQUIREMENTS_PATH%" (
+        echo [INFO] Criando script de instalacao de dependencias...
+        
+        :: Cria script intermediário para isolar a chamada de activate.bat
+        set "DEPS_SCRIPT=%TEMP%\install_deps_%RANDOM%.bat"
+        (
+            echo @echo off
+            echo call "%VENV_DIR%\Scripts\activate.bat"
+            echo pip install -r "%REQUIREMENTS_PATH%" ^>^> "%LOCAL_LOG%" 2^>^&1
+            echo exit /b !errorlevel!
+        ) > "%DEPS_SCRIPT%"
+        
+        :: Executa e verifica o resultado do script intermediário
+        call "%DEPS_SCRIPT%"
+        set "INSTALL_ERRORLEVEL=!errorlevel!"
+        del "%DEPS_SCRIPT%"
+        
+        if !INSTALL_ERRORLEVEL! neq 0 (
+            echo [ERRO] Falha ao instalar dependencias.
+            call :REGISTER_LOG "ERROR" "Falha ao instalar dependencias (Cod: !INSTALL_ERRORLEVEL!)."
+        ) else (
+            echo [OK] Venv e dependencias instaladas com sucesso.
+            echo call :REGISTER_LOG "INFO" "Venv e dependencias instaladas."
+        )
+    ) else (
+        echo [AVISO] requirements.txt nao encontrado em "%REQUIREMENTS_PATH%". Venv criado, mas sem dependencias.
+        call :REGISTER_LOG "WARNING" "Venv criado, requirements.txt ausente."
+    )
+    echo.
+    pause
+    cls
+)
+:: =========================================================
+
+:: =========================================================
+::  3. GERAR FERRAMENTAS (CORRIGIDO PROBLEMA DE INDENTAÇÃO)
 :: =========================================================
 
 :: --- Gerando Patcher ---
@@ -66,57 +137,102 @@ set "st_warn=[!]"
 
 cls
 echo.
-echo    =========================================
-echo           FLUXUS MANAGER
-echo    =========================================
+echo     =========================================
+echo           FLUXUS MANAGER
+echo     =========================================
 echo.
-echo    1. INICIAR (Validacao + Docker)
-echo    2. PARAR TUDO
-echo    3. SAIR
+echo     1. INICIAR BACKEND (API + Docker)
+echo     2. INICIAR FRONT-END (npm run dev)
+echo     3. PARAR TUDO
+echo     4. SAIR
 echo.
 set /p "opt= > Opcao: "
 
 if "%opt%"=="1" goto SEQ_START
-if "%opt%"=="2" goto SEQ_STOP
-if "%opt%"=="3" exit
+if "%opt%"=="2" goto SEQ_FRONT_START
+if "%opt%"=="3" goto SEQ_STOP
+if "%opt%"=="4" exit
 goto MAIN_MENU
 
 :: =========================================================
-::  FUNÇÃO LOG
+::  FUNÇÃO LOG
 :: =========================================================
 :REGISTER_LOG
 echo [%TIME%] [%~1] %~2 >> "%LOCAL_LOG%"
 if exist "%VENV_PYTHON%" (
-    "%VENV_PYTHON%" "%BOOT_LOGGER%" "%~1" "%~2" >nul 2>&1
+    "%VENV_PYTHON%" "%BOOT_LOGGER%" "%~1" "%~2" >nul 2>&1
 )
 exit /b
 
 :: =========================================================
-::  INICIAR
+::  INICIAR FRONT-END (Não-bloqueante)
+:: =========================================================
+:SEQ_FRONT_START
+cls
+echo.
+echo     [2] INICIALIZACAO FRONT-END
+echo     ------------------------------
+
+call :REGISTER_LOG "INFO" "--- START FRONT-END ---"
+
+:: PASSO 1: Verifica Caminho
+if not exist "%FRONT_PATH%" (
+    echo     [X] Erro: Caminho do Front nao encontrado: "%FRONT_PATH%"
+    call :REGISTER_LOG "CRITICAL" "Caminho do Front-end ausente."
+    pause
+    goto MAIN_MENU
+)
+
+echo     [OK] Caminho verificado.
+echo     [..] Entrando em "%FRONT_PATH%" e iniciando 'npm run dev'...
+
+cd /d "%FRONT_PATH%"
+
+if exist "%FRONT_PATH%\venv" (
+    echo     [!] Aviso: Ha um venv em "%FRONT_PATH%". Ignorando-o.
+)
+
+:: Comando 'start cmd /k' abre uma nova janela para o npm e volta para o menu.
+start "Front-end Development Server" cmd /k npm run dev
+
+cd /d "%BASE_DIR%"
+
+call :REGISTER_LOG "INFO" "Front-end iniciado em nova janela (npm run dev)."
+
+echo.
+echo     [OK] Servidor Front-end iniciado em uma nova janela de comando.
+echo.
+echo     [ENTER] Voltar ao Menu
+pause >nul
+goto MAIN_MENU
+
+:: =========================================================
+::  INICIAR BACKEND
 :: =========================================================
 :SEQ_START
 set "s1=%st_wait%" & set "s2=%st_wait%" & set "s3=%st_wait%" & set "s4=%st_wait%" & set "s5=%st_wait%"
-call :REGISTER_LOG "INFO" "--- START ---"
+call :REGISTER_LOG "INFO" "--- START BACKEND ---"
 
 :: PASSO 1: GIT/VENV
 set "s1=%st_work%"
 set "msg=Verificando Ambiente..."
 call :DRAW_START
 
-if exist "%BASE_DIR%\sumo-backend\venv\Scripts\activate.bat" (
-    call "%BASE_DIR%\sumo-backend\venv\Scripts\activate.bat"
-    
-    git --version >nul 2>&1
-    if !errorlevel! neq 0 (
-        set "s1=%st_warn%"
-        call :REGISTER_LOG "WARNING" "Git nao encontrado (Seguindo sem)."
-    ) else (
-        set "s1=%st_ok%"
-    )
+if exist "%VENV_PYTHON%" (
+    :: Ativa o ambiente VENV
+    call "%VENV_DIR%\Scripts\activate.bat"
+    
+    git --version >nul 2>&1
+    if !errorlevel! neq 0 (
+        set "s1=%st_warn%"
+        call :REGISTER_LOG "WARNING" "Git nao encontrado (Seguindo sem)."
+    ) else (
+        set "s1=%st_ok%"
+    )
 ) else (
-    set "s1=%st_err%" & set "msg=Erro: Venv nao existe"
-    call :REGISTER_LOG "CRITICAL" "Venv ausente."
-    goto START_FAIL
+    set "s1=%st_err%" & set "msg=Erro: Venv nao existe/invalido"
+    call :REGISTER_LOG "CRITICAL" "Venv ausente ou invalido."
+    goto START_FAIL
 )
 
 :: PASSO 2: CONEXÃO
@@ -126,9 +242,9 @@ call :DRAW_START
 
 curl -s --head https://supabase.com >nul
 if %errorlevel% neq 0 (
-    set "s2=%st_err%" & set "msg=Sem Internet"
-    call :REGISTER_LOG "CRITICAL" "Sem conexao."
-    goto START_FAIL
+    set "s2=%st_err%" & set "msg=Sem Internet"
+    call :REGISTER_LOG "CRITICAL" "Sem conexao."
+    goto START_FAIL
 )
 set "s2=%st_ok%"
 
@@ -139,26 +255,27 @@ call :DRAW_START
 
 docker info >nul 2>&1
 if %errorlevel% neq 0 (
-    set "msg=Iniciando Docker..."
-    call :DRAW_START
-    start "" "%DOCKER_EXE%"
-    :WAIT_DOCKER
-    timeout /t 3 /nobreak >nul
-    docker info >nul 2>&1
-    if %errorlevel% neq 0 goto WAIT_DOCKER
+    set "msg=Iniciando Docker..."
+    call :DRAW_START
+    start "" "%DOCKER_EXE%"
+    :WAIT_DOCKER
+    timeout /t 3 /nobreak >nul
+    docker info >nul 2>&1
+    if %errorlevel% neq 0 goto WAIT_DOCKER
 )
 set "s3=%st_ok%"
 
-:: PASSO 4: CONTAINERS
+:: PASSO 4: CONTAINERS (CORRIGIDO COM CAMINHO EXPLÍCITO)
 set "s4=%st_work%"
 set "msg=Subindo Containers (Build)..."
 call :DRAW_START
 
-docker-compose up -d --build >> "%LOCAL_LOG%" 2>&1
+:: Usa o caminho explícito para garantir que o docker-compose.yml seja encontrado:
+docker-compose -f "%BASE_DIR%\docker-compose.yml" up -d --build >> "%LOCAL_LOG%" 2>&1
 if %errorlevel% neq 0 (
-    set "s4=%st_err%" & set "msg=Erro Docker (Veja Log)"
-    call :REGISTER_LOG "CRITICAL" "Falha no build."
-    goto START_FAIL
+    set "s4=%st_err%" & set "msg=Erro Docker (Veja Log - Verifique docker-compose.yml)"
+    call :REGISTER_LOG "CRITICAL" "Falha no build. docker-compose.yml ausente ou erro."
+    goto START_FAIL
 )
 set "s4=%st_ok%"
 
@@ -178,9 +295,9 @@ curl -s http://localhost:5000/ >nul
 if %errorlevel% equ 0 goto SUCCESS
 
 if %try% geq 40 (
-    set "s5=%st_err%" & set "msg=TIMEOUT API"
-    call :REGISTER_LOG "ERROR" "Timeout 5000."
-    goto START_FAIL
+    set "s5=%st_err%" & set "msg=TIMEOUT API"
+    call :REGISTER_LOG "ERROR" "Timeout 5000."
+    goto START_FAIL
 )
 goto CHECK_API
 
@@ -190,17 +307,17 @@ set "msg=SISTEMA ONLINE."
 call :DRAW_START
 call :REGISTER_LOG "INFO" "Sistema Online."
 echo.
-echo    [ENTER] Voltar ao Menu
+echo     [ENTER] Voltar ao Menu
 pause >nul
 goto MAIN_MENU
 
 :START_FAIL
 call :DRAW_START
 echo.
-echo    [ERRO] Detalhes em: %LOCAL_LOG%
+echo     [ERRO] Detalhes em: %LOCAL_LOG%
 echo.
-echo    LOG DE ERRO:
-echo    ------------
+echo     LOG DE ERRO:
+echo     ------------
 powershell -command "Get-Content '%LOCAL_LOG%' -Tail 10"
 pause
 goto MAIN_MENU
@@ -208,33 +325,33 @@ goto MAIN_MENU
 :DRAW_START
 cls
 echo.
-echo    [1] INICIALIZACAO
-echo    ------------------------------
-echo    %s1%  1. Venv / Git
-echo    %s2%  2. Conexao Nuvem
-echo    %s3%  3. Motor Docker
-echo    %s4%  4. Containers Backend
-echo    %s5%  5. API Python (Porta 5000)
-echo    ------------------------------
-echo    Status: %msg%
+echo     [1] INICIALIZACAO BACKEND
+echo     ------------------------------
+echo     %s1%  1. Venv / Git
+echo     %s2%  2. Conexao Nuvem
+echo     %s3%  3. Motor Docker
+echo     %s4%  4. Containers Backend
+echo     %s5%  5. API Python (Porta 5000)
+echo     ------------------------------
+echo     Status: %msg%
 exit /b
 
 :: =========================================================
-::  PARAR
+::  PARAR
 :: =========================================================
 :SEQ_STOP
 cls
 echo.
-echo    PARANDO SISTEMA...
+echo     PARANDO SISTEMA...
 echo.
 call :REGISTER_LOG "WARNING" "--- STOP ---"
 
-echo    [..] Parando containers...
+echo     [..] Parando containers...
 docker-compose stop >> "%LOCAL_LOG%" 2>&1
-echo    [..] Removendo rede...
+echo     [..] Removendo rede...
 docker-compose down >> "%LOCAL_LOG%" 2>&1
 
-echo    [OK] Finalizado.
+echo     [OK] Finalizado.
 call :REGISTER_LOG "INFO" "Parado."
 timeout /t 2 >nul
 goto MAIN_MENU
