@@ -8,7 +8,7 @@ color 0F
 ::  1. CONFIGURAÇÕES
 :: =========================================================
 set "BASE_DIR=%~dp0"
-if "%BASE_DIR:~-1%"=="" set "BASE_DIR=%BASE_DIR:~0,-1%"
+if "%BASE_DIR:~-1%"=="\" set "BASE_DIR=%BASE_DIR:~0,-1%"
 
 set "VENV_DIR=%BASE_DIR%\sumo-backend\venv"
 set "VENV_PYTHON=%VENV_DIR%\Scripts\python.exe"
@@ -99,12 +99,12 @@ if not exist "%VENV_DIR%" (
 :: --- Gerando Patcher ---
 echo import os > "%DB_PATCHER%"
 echo def patch_file(fp, old, new): >> "%DB_PATCHER%"
-echo     if not os.path.exists(fp): return >> "%DB_PATCHER%"
-echo     with open(fp, 'r', encoding='utf-8') as f: c = f.read() >> "%DB_PATCHER%"
-echo     if old in c: >> "%DB_PATCHER%"
-echo         with open(fp, 'w', encoding='utf-8') as f: f.write(c.replace(old, new)) >> "%DB_PATCHER%"
-echo if name == "main": >> "%DB_PATCHER%"
-echo     patch_file(r"%BASE_DIR%\sumo-backend\logger_utils.py", "application_logs", "simulation_logs") >> "%DB_PATCHER%"
+echo     if not os.path.exists(fp): return >> "%DB_PATCHER%"
+echo     with open(fp, 'r', encoding='utf-8') as f: c = f.read() >> "%DB_PATCHER%"
+echo     if old in c: >> "%DB_PATCHER%"
+echo         with open(fp, 'w', encoding='utf-8') as f: f.write(c.replace(old, new)) >> "%DB_PATCHER%"
+echo if __name__ == "__main__": >> "%DB_PATCHER%"
+echo     patch_file(r"%BASE_DIR%\sumo-backend\logger_utils.py", "application_logs", "simulation_logs") >> "%DB_PATCHER%"
 
 :: Executa Patcher
 if exist "%VENV_PYTHON%" "%VENV_PYTHON%" "%DB_PATCHER%" >> "%LOCAL_LOG%" 2>&1
@@ -118,14 +118,14 @@ echo except: pass >> "%BOOT_LOGGER%"
 echo url = os.getenv("SUPABASE_URL") >> "%BOOT_LOGGER%"
 echo key = os.getenv("SUPABASE_KEY") >> "%BOOT_LOGGER%"
 echo def log(lvl, msg): >> "%BOOT_LOGGER%"
-echo     if not url or not key: return >> "%BOOT_LOGGER%"
-echo     try: >> "%BOOT_LOGGER%"
-echo         sb = create_client(url, key) >> "%BOOT_LOGGER%"
-echo         data = {"nivel": lvl, "modulo": "CONTROLLER", "mensagem": msg, "timestamp": datetime.datetime.now().isoformat()} >> "%BOOT_LOGGER%"
-echo         sb.table("simulation_logs").insert(data).execute() >> "%BOOT_LOGGER%"
-echo     except: pass >> "%BOOT_LOGGER%"
-echo if name == "main": >> "%BOOT_LOGGER%"
-echo     if len(sys.argv) ^> 2: log(sys.argv[1], sys.argv[2]) >> "%BOOT_LOGGER%"
+echo     if not url or not key: return >> "%BOOT_LOGGER%"
+echo     try: >> "%BOOT_LOGGER%"
+echo         sb = create_client(url, key) >> "%BOOT_LOGGER%"
+echo         data = {"nivel": lvl, "modulo": "CONTROLLER", "mensagem": msg, "timestamp": datetime.datetime.now().isoformat()} >> "%BOOT_LOGGER%"
+echo         sb.table("simulation_logs").insert(data).execute() >> "%BOOT_LOGGER%"
+echo     except: pass >> "%BOOT_LOGGER%"
+echo if __name__ == "__main__": >> "%BOOT_LOGGER%"
+echo     if len(sys.argv) ^> 2: log(sys.argv[1], sys.argv[2]) >> "%BOOT_LOGGER%"
 
 :MAIN_MENU
 :: Icones
@@ -137,13 +137,13 @@ set "st_warn=[!]"
 
 cls
 echo.
-echo =========================================
+echo =========================================
 echo           FLUXUS MANAGER
-echo =========================================
+echo =========================================
 echo.
-echo     1. INICIAR (API + Docker + NGrok) 
+echo     1. INICIAR BACKEND (API + Docker)
 echo     2. INICIAR FRONT-END (npm run dev)
-echo     3. PARAR TUDO 🌟
+echo     3. PARAR TUDO
 echo     4. SAIR
 echo.
 set /p "opt= > Opcao: "
@@ -189,7 +189,7 @@ echo     [..] Entrando em "%FRONT_PATH%" e iniciando 'npm run dev'...
 cd /d "%FRONT_PATH%"
 
 if exist "%FRONT_PATH%\venv" (
-    echo     [!] Aviso: Ha um venv em "%FRONT_PATH%". Ignorando-o.
+    echo     [!] Aviso: Ha um venv em "%FRONT_PATH%". Ignorando-o.
 )
 
 :: Comando 'start cmd /k' abre uma nova janela para o npm e volta para o menu.
@@ -210,7 +210,7 @@ goto MAIN_MENU
 ::  INICIAR BACKEND
 :: =========================================================
 :SEQ_START
-set "s1=%st_wait%" & set "s2=%st_wait%" & set "s3=%st_wait%" & set "s4=%st_wait%" & set "s5=%st_wait%" & set "s6=%st_wait%"
+set "s1=%st_wait%" & set "s2=%st_wait%" & set "s3=%st_wait%" & set "s4=%st_wait%" & set "s5=%st_wait%"
 call :REGISTER_LOG "INFO" "--- START BACKEND ---"
 
 :: PASSO 1: GIT/VENV
@@ -292,7 +292,7 @@ call :DRAW_START
 
 timeout /t 3 /nobreak >nul
 curl -s http://localhost:5000/ >nul
-if %errorlevel% equ 0 goto START_NGROK_TUNNEL
+if %errorlevel% equ 0 goto SUCCESS
 
 if %try% geq 40 (
     set "s5=%st_err%" & set "msg=TIMEOUT API"
@@ -301,24 +301,11 @@ if %try% geq 40 (
 )
 goto CHECK_API
 
-:: PASSO: INICIAR NGrok (DEPOIS QUE O DOCKER ESTÁ ONLINE)
-:START_NGROK_TUNNEL
-set "s5=%st_ok%"
-set "s6=%st_work%"
-set "msg=Iniciando NGrok (Porta 5000)..."
-call :DRAW_START
-call :REGISTER_LOG "INFO" "Tentando iniciar NGrok para tunelamento."
-
-:: O comando 'start' abre o ngrok em uma nova janela e não bloqueia o script principal.
-:: A nova janela do ngrok ficará aberta mostrando o endereço HTTPS.
-start "NGrok Tunnel (Public Access)" ngrok http 5000 >> "%LOCAL_LOG%" 2>&1
-
-set "s6=%st_ok%"
-
 :SUCCESS
+set "s5=%st_ok%"
 set "msg=SISTEMA ONLINE."
 call :DRAW_START
-call :REGISTER_LOG "INFO" "Sistema Online. NGrok iniciado."
+call :REGISTER_LOG "INFO" "Sistema Online."
 echo.
 echo     [ENTER] Voltar ao Menu
 pause >nul
@@ -345,8 +332,7 @@ echo     %s2%  2. Conexao Nuvem
 echo     %s3%  3. Motor Docker
 echo     %s4%  4. Containers Backend
 echo     %s5%  5. API Python (Porta 5000)
-echo     %s6%  6. NGrok (Tunelamento Remoto)
-echo ------------------------------
+echo ------------------------------
 echo Status: %msg%
 exit /b
 
@@ -364,11 +350,6 @@ echo     [..] Parando containers...
 docker-compose stop >> "%LOCAL_LOG%" 2>&1
 echo     [..] Removendo rede...
 docker-compose down >> "%LOCAL_LOG%" 2>&1
-
-:: ATENÇÃO: Nao ha um comando facil para fechar a janela do ngrok aberta pelo 'start'.
-:: O usuario tera que fechar a janela do ngrok manualmente (ou usar Ctrl+C na janela do ngrok).
-echo     [!] AVISO: Feche a janela do NGrok manualmente (Ctrl+C).
-call :REGISTER_LOG "WARNING" "NGrok iniciado por 'start', precisa de encerramento manual."
 
 echo     [OK] Finalizado.
 call :REGISTER_LOG "INFO" "Parado."

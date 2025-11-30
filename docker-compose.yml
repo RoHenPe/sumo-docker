@@ -1,12 +1,11 @@
+version: '3.8'
+
 services:
   sumo-backend:
-    # --- CORREÇÃO DO NOME ---
-    # Isso força o container a se chamar apenas "sumo-backend"
     container_name: sumo-backend
-    
     build: ./sumo-backend
     ports:
-      - "5000:5000"
+      - "5000:5000" # Acesso local
     volumes:
       - ./scenarios:/app/scenarios
     env_file:
@@ -14,3 +13,25 @@ services:
     environment:
       - SUMO_HOME=/usr/share/sumo
     restart: always
+    networks:
+      - sumo-net
+
+  ngrok:
+    container_name: sumo-ngrok
+    image: ngrok/ngrok:latest
+    restart: unless-stopped
+    command: "http sumo-backend:5000"
+    env_file:
+      - .env
+    environment:
+      - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN}
+    ports:
+      - "4040:4040" # Painel de controle do Ngrok
+    depends_on:
+      - sumo-backend
+    networks:
+      - sumo-net
+
+networks:
+  sumo-net:
+    driver: bridge
