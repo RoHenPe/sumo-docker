@@ -9,3 +9,5 @@ pydantic
 requests
 scipy
 pytz 
+pyngrok
+python-dotenv

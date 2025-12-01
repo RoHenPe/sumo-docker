@@ -1,91 +1,68 @@
 import os
 import time
-import requests
-import json
 import sys
+from dotenv import load_dotenv
+from supabase import create_client
+from pyngrok import ngrok, conf
 
-# --- SUAS CONFIGURAÇÕES ---
-VERCEL_TOKEN = "m0tFEuTAoWFulOsHkGdWozCw"  # Seu token atual
-VERCEL_PROJECT_NAME = "web"                 # Nome do projeto identificado
-TARGET_ENV = "NEXT_PUBLIC_API_URL"
+# Carrega variáveis
+load_dotenv()
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+NGROK_AUTH_TOKEN = os.getenv("NGROK_AUTH_TOKEN") # Adicione isso no seu .env
 
-def get_ngrok_url():
-    print("⏳ Procurando túnel Ngrok...")
-    # Tenta conectar na API local do Ngrok (porta 4040 é padrão do Docker/Ngrok)
-    for i in range(10):
+if not SUPABASE_URL or not SUPABASE_KEY:
+    print("[ERRO] Supabase Credentials missing.")
+    sys.exit(1)
+
+def update_config(url_http, url_ws):
+    try:
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+        
+        # Atualiza HTTP
+        supabase.table("system_config").update({"value": url_http, "updated_at": "now()"}).eq("key", "backend_url").execute()
+        
+        # Atualiza WebSocket
+        supabase.table("system_config").update({"value": url_ws, "updated_at": "now()"}).eq("key", "backend_ws").execute()
+        
+        print(f"[SYNC] URLs atualizadas no Supabase:\nHTTP: {url_http}\nWS: {url_ws}")
+    except Exception as e:
+        print(f"[ERRO] Falha ao atualizar Supabase: {e}")
+
+def main():
+    # Configura Ngrok
+    if NGROK_AUTH_TOKEN:
+        conf.get_default().auth_token = NGROK_AUTH_TOKEN
+    
+    print("[TUNNEL] Iniciando Ngrok na porta 5000...")
+    
+    # Abre o túnel
+    try:
+        # Fecha túneis anteriores se houver
+        ngrok.kill()
+        
+        # Cria novo túnel HTTP
+        tunnel = ngrok.connect(5000, "http")
+        public_url = tunnel.public_url
+        
+        # Converte para WSS (WebSocket Seguro)
+        wss_url = public_url.replace("http://", "ws://").replace("https://", "wss://") + "/ws"
+        
+        # Atualiza o banco de dados
+        update_config(public_url, wss_url)
+        
+        print("[INFO] Pressione Ctrl+C para encerrar o túnel.")
+        
+        # MANTÉM O SCRIPT RODANDO (Loop Infinito)
         try:
-            res = requests.get("http://localhost:4040/api/tunnels", timeout=2)
-            data = res.json()
-            # Pega o primeiro túnel público HTTPS
-            for tunnel in data.get('tunnels', []):
-                if tunnel.get('public_url', '').startswith('https'):
-                    public_url = tunnel['public_url']
-                    print(f"✅ Ngrok encontrado: {public_url}")
-                    return public_url
-        except:
-            pass
-        time.sleep(2)
-        print(f"   (Tentativa {i+1}/10) Aguardando Ngrok subir...")
-    return None
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            print("Encerrando túnel...")
+            ngrok.kill()
 
-def update_vercel_env(new_value):
-    headers = {
-        "Authorization": f"Bearer {VERCEL_TOKEN}", 
-        "Content-Type": "application/json"
-    }
-    
-    # 1. Pegar ID do Projeto
-    print(f"🔍 Buscando ID do projeto '{VERCEL_PROJECT_NAME}'...")
-    r = requests.get(f"https://api.vercel.com/v9/projects/{VERCEL_PROJECT_NAME}", headers=headers)
-    
-    if r.status_code != 200:
-        print(f"❌ Erro ao achar projeto. Verifique o nome '{VERCEL_PROJECT_NAME}'.")
-        print(f"   Detalhe: {r.text}")
-        return
-
-    project_data = r.json()
-    project_id = project_data.get('id')
-    print(f"   ID encontrado: {project_id}")
-
-    # 2. Listar Variáveis para achar o ID da NEXT_PUBLIC_API_URL
-    print(f"🔍 Buscando variável '{TARGET_ENV}'...")
-    r = requests.get(f"https://api.vercel.com/v9/projects/{project_id}/env", headers=headers)
-    env_id = None
-    
-    # Procura a variável na lista
-    for env in r.json().get('envs', []):
-        if env['key'] == TARGET_ENV:
-            env_id = env['id']
-            break
-    
-    # Se não existir, avisa
-    if not env_id:
-        print(f"❌ Variável '{TARGET_ENV}' não encontrada no projeto Vercel.")
-        print("   Crie ela manualmente no painel da Vercel primeiro com um valor qualquer.")
-        return
-
-    # 3. Atualizar a variável
-    print(f"🚀 Atualizando Vercel para: {new_value}")
-    body = {
-        "value": new_value, 
-        "type": "encrypted", 
-        "target": ["production", "preview", "development"]
-    }
-    r = requests.patch(
-        f"https://api.vercel.com/v9/projects/{project_id}/env/{env_id}", 
-        headers=headers, 
-        json=body
-    )
-    
-    if r.status_code == 200:
-        print("✅ SUCESSO! Variável atualizada na Vercel.")
-        print("⚠️  ATENÇÃO: Para o site pegar o novo link, pode ser necessário um REDEPLOY no painel da Vercel.")
-    else:
-        print(f"❌ Falha ao atualizar: {r.text}")
+    except Exception as e:
+        print(f"[CRITICAL] Erro no Ngrok: {e}")
 
 if __name__ == "__main__":
-    url = get_ngrok_url()
-    if url:
-        update_vercel_env(url)
-    else:
-        print("❌ Não foi possível pegar a URL do Ngrok. Verifique se o Docker está rodando.")
+    main()

@@ -37,7 +37,6 @@ SCENARIO_DIR = "/app/scenarios"
 os.makedirs(SCENARIO_DIR, exist_ok=True)
 
 app = FastAPI()
-socket_app = app 
 
 app.add_middleware(
     CORSMiddleware,
@@ -60,77 +59,78 @@ except Exception as e:
     supabase = None
 
 traffic_ai = TrafficAI(ai_enabled=False)
-simulation_running = False # Flag Global de Controle
+simulation_running = False 
 current_scenario_id = None
+
+# --- GERENCIADOR DE CONEXÕES (FILA) ---
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: list[WebSocket] = []
+        self.queue: list[WebSocket] = []
+        self.MAX_SIMULATIONS = 2  # Limite Rígido de 2 usuários
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        if len(self.active_connections) < self.MAX_SIMULATIONS:
+            self.active_connections.append(websocket)
+            return True # Entrou
+        else:
+            self.queue.append(websocket)
+            pos = len(self.queue)
+            await websocket.send_json({"status": "queue", "position": pos, "message": "Servidor cheio. Aguarde na fila."})
+            return False # Fila
+
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+        elif websocket in self.queue:
+            self.queue.remove(websocket)
+
+    def is_active(self, websocket: WebSocket):
+        return websocket in self.active_connections
+
+    def try_promote(self):
+        if len(self.active_connections) < self.MAX_SIMULATIONS and len(self.queue) > 0:
+            next_ws = self.queue.pop(0)
+            self.active_connections.append(next_ws)
+            return next_ws
+        return None
+
+manager = ConnectionManager()
 
 class CityRequest(BaseModel):
     city_name: str
     ai_enabled: bool = False
 
 class ControlRequest(BaseModel):
-    action: str  # 'start' ou 'stop'
+    action: str 
 
-# --- ROTAS ---
-
+# --- ROTAS HTTP ---
 @app.get("/")
 def health_check():
     if sys_logger: sys_logger.info("Health Check OK.")
-    return {"status": "online", "service": "SUMO Backend"}
-
-@app.get("/validate-city")
-def validate_city(city: str):
-    if not ox: return {"exists": False, "error": "OSMnx ausente"}
-    try:
-        gdf = ox.geocode_to_gdf(city)
-        return {"exists": True, "lat": gdf.geometry.y[0], "lon": gdf.geometry.x[0]}
-    except Exception as e:
-        if sys_logger: sys_logger.warning(f"Erro cidade: {e}")
-        return {"exists": False}
+    return {"status": "online", "active": len(manager.active_connections), "queue": len(manager.queue)}
 
 @app.post("/generate")
 def generate_and_save(req: CityRequest):
     global current_scenario_id
     if sys_logger: sys_logger.info(f"Gerando: {req.city_name}")
-
     try:
         data = generate_scenario(req.city_name, max_vehicles=300)
     except Exception as e:
         if sys_logger: sys_logger.error(f"Erro Generator: {e}")
         raise HTTPException(status_code=400, detail=str(e))
-
-    commit_url = "Git Disabled"
+    
+    # Lógica simplificada de salvar cenário no DB
     if supabase:
-        try:
-            bucket = "scenarios"
-            files = ["simulacao.net.xml", "simulacao.rou.xml"]
-            for f_name in files:
-                path = os.path.join(SCENARIO_DIR, f_name)
-                if os.path.exists(path):
-                    with open(path, "rb") as f:
-                        supabase.storage.from_(bucket).upload(f"{req.city_name}/{f_name}", f, {"upsert": "true"})
-        except Exception as e:
-            if sys_logger: sys_logger.error(f"Erro Storage: {e}")
-
-        # Git Logic (Simplified)
-        if GITHUB_TOKEN:
-            try:
-                g = Github(GITHUB_TOKEN)
-                repo = g.get_user().get_repo("sumo-docker") 
-                commit_url = f"https://github.com/{repo.full_name}/tree/main/scenarios"
-            except: pass
-
         try:
             res = supabase.table("scenarios").insert({
                 "city_name": req.city_name,
                 "node_count": data.get("nodes", 0),
-                "edge_count": data.get("edges", 0),
-                "github_commit_url": commit_url
+                "edge_count": data.get("edges", 0)
             }).execute()
-            if res.data:
-                current_scenario_id = res.data[0]['id']
-        except Exception as e:
-            if sys_logger: sys_logger.error(f"Erro SQL: {e}")
-
+            if res.data: current_scenario_id = res.data[0]['id']
+        except: pass
     return {"status": "success", "scenario_id": current_scenario_id}
 
 @app.post("/toggle-ai")
@@ -141,47 +141,58 @@ def toggle_ai(enabled: bool):
 @app.post("/control-simulation")
 def control_simulation(req: ControlRequest):
     global simulation_running
-    
     if req.action == "stop":
-        if not simulation_running:
-            return {"status": "warning", "message": "Simulação não estava rodando."}
-        
         simulation_running = False
-        if sys_logger: sys_logger.info("Comando de PARADA recebido via API.")
-        return {"status": "success", "message": "Sinal de parada enviado."}
-    
+        return {"status": "success"}
     elif req.action == "start":
-        return {"status": "success", "message": "Pronto para conexão WS."}
-    
-    raise HTTPException(status_code=400, detail="Ação inválida")
+        return {"status": "success"}
+    raise HTTPException(status_code=400)
 
 # --- WEBSOCKET ---
-
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    await websocket.accept()
-    global simulation_running
+    # 1. Tenta conectar (Ativo ou Fila)
+    is_authorized = await manager.connect(websocket)
     
+    # 2. Loop de Espera na Fila
+    if not is_authorized:
+        try:
+            while websocket in manager.queue:
+                promoted = manager.try_promote()
+                if promoted == websocket:
+                    is_authorized = True
+                    await websocket.send_json({"status": "started", "message": "Sua vez chegou!"})
+                    break
+                await asyncio.sleep(1)
+        except WebSocketDisconnect:
+            manager.disconnect(websocket)
+            return
+
+    # 3. Inicia Simulação
+    global simulation_running
     simulation_running = True
-    if sys_logger: sys_logger.info("Simulacao Iniciada (WS).")
+    if sys_logger: sys_logger.info("Simulacao Iniciada.")
 
     sumo_cmd = ["sumo", "-c", "/app/scenarios/simulacao.sumocfg", "--step-length", "0.5", "--no-warnings"]
-    
     if not os.path.exists("/app/scenarios/simulacao.sumocfg"):
         with open("/app/scenarios/simulacao.sumocfg", "w") as f:
             f.write("""<configuration><input><net-file value="simulacao.net.xml"/><route-files value="simulacao.rou.xml"/></input></configuration>""")
 
     try:
-        traci.start(sumo_cmd)
-    except traci.TraCIException:
-        try: traci.close()
-        except: pass
-        traci.start(sumo_cmd)
+        try: traci.start(sumo_cmd)
+        except: 
+            try: traci.close()
+            except: pass
+            traci.start(sumo_cmd)
+    except Exception:
+        await websocket.close()
+        return
 
     step_count = 0
     try:
-        # Loop principal verifica a flag simulation_running
         while traci.simulation.getMinExpectedNumber() > 0 and simulation_running:
+            if not manager.is_active(websocket): break
+
             traci.simulationStep()
             ai_logs = traffic_ai.step()
             
@@ -189,7 +200,15 @@ async def websocket_endpoint(websocket: WebSocket):
             for veh_id in traci.vehicle.getIDList():
                 x, y = traci.vehicle.getPosition(veh_id)
                 lon, lat = traci.simulation.convertGeo(x, y)
-                vehicles.append({"id": veh_id, "lat": lat, "lon": lon, "angle": traci.vehicle.getAngle(veh_id)})
+                # DADOS CRÍTICOS PARA O FRONTEND
+                vehicles.append({
+                    "id": veh_id, 
+                    "lat": lat, 
+                    "lon": lon, 
+                    "angle": traci.vehicle.getAngle(veh_id),
+                    "speed": traci.vehicle.getSpeed(veh_id),      # m/s
+                    "distance": traci.vehicle.getDistance(veh_id) # metros
+                })
 
             tls_states = {tls: traci.trafficlight.getRedYellowGreenState(tls) for tls in traci.trafficlight.getIDList()}
             
@@ -200,6 +219,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 "status": "running"
             })
 
+            # Salva logs no Supabase a cada 10 steps
             if step_count % 10 == 0 and ai_logs and current_scenario_id and supabase:
                 for log in ai_logs:
                     log['scenario_id'] = current_scenario_id
@@ -207,22 +227,20 @@ async def websocket_endpoint(websocket: WebSocket):
                 asyncio.create_task(save_logs_async(ai_logs))
 
             step_count += 1
-            # Pausa para permitir que o endpoint POST /control-simulation seja processado
             await asyncio.sleep(0.05)
         
         if not simulation_running:
-             await websocket.send_json({"status": "stopped", "message": "Parado pelo usuário."})
+             await websocket.send_json({"status": "stopped"})
 
     except Exception as e:
-        print(f"Erro Simulacao: {e}")
+        print(f"Erro Loop: {e}")
     finally:
+        manager.disconnect(websocket)
         try: traci.close()
         except: pass
         simulation_running = False
 
 async def save_logs_async(logs):
     try:
-        if supabase:
-            supabase.table("simulation_logs").insert(logs).execute()
-    except Exception as e:
-        print(f"Erro logs async: {e}")
+        if supabase: supabase.table("simulation_logs").insert(logs).execute()
+    except: pass
