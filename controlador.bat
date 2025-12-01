@@ -129,7 +129,7 @@ set "msg=Iniciando Docker Desktop..."
 call :DRAW_START
 start "" "%DOCKER_EXE%"
 :WAIT_DOCKER_LOOP
-timeout /t 3 /nobreak >nul
+timeout /t 5 /nobreak >nul
 docker info >nul 2>&1
 if %errorlevel% neq 0 goto WAIT_DOCKER_LOOP
 
@@ -150,12 +150,13 @@ call :DRAW_START
 set /a try=0
 :CHECK_API
 set /a try+=1
-set "msg=Aguardando API (%try%/40)..."
+set "msg=Aguardando API (%try%/60)..."
 call :DRAW_START
 timeout /t 3 /nobreak >nul
-curl -s http://localhost:5000/ >nul
+:: USA 127.0.0.1 em vez de localhost
+curl -s http://127.0.0.1:5000/ >nul
 if %errorlevel% equ 0 goto API_OK
-if %try% geq 40 (
+if %try% geq 60 (
     set "s5=%st_err%" & set "msg=TIMEOUT API"
     goto START_FAIL
 )

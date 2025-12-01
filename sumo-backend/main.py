@@ -8,10 +8,8 @@ from pydantic import BaseModel
 from supabase import create_client, Client
 from github import Github
 
-# Logger
 from logger_utils import setup_global_logging
 
-# Imports Opcionais
 try:
     import osmnx as ox
 except ImportError:
@@ -28,7 +26,6 @@ except ImportError:
         def set_ai_status(self, enabled): pass
         def step(self): return []
 
-# Configurações
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
@@ -45,7 +42,6 @@ app.add_middleware(
     allow_headers=["*"]
 )
 
-# Inicializa Logs
 sys_logger = None
 try:
     if SUPABASE_URL and SUPABASE_KEY:
@@ -62,23 +58,23 @@ traffic_ai = TrafficAI(ai_enabled=False)
 simulation_running = False 
 current_scenario_id = None
 
-# --- GERENCIADOR DE CONEXÕES (FILA) ---
+# --- GERENCIADOR DE FILA (LIMITE DE 1) ---
 class ConnectionManager:
     def __init__(self):
         self.active_connections: list[WebSocket] = []
         self.queue: list[WebSocket] = []
-        self.MAX_SIMULATIONS = 2  # Limite Rígido de 2 usuários
+        self.MAX_SIMULATIONS = 1  # <--- ALTERADO PARA 1
 
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
         if len(self.active_connections) < self.MAX_SIMULATIONS:
             self.active_connections.append(websocket)
-            return True # Entrou
+            return True 
         else:
             self.queue.append(websocket)
             pos = len(self.queue)
-            await websocket.send_json({"status": "queue", "position": pos, "message": "Servidor cheio. Aguarde na fila."})
-            return False # Fila
+            await websocket.send_json({"status": "queue", "position": pos, "message": "Servidor ocupado (1 usuário por vez). Aguarde..."})
+            return False
 
     def disconnect(self, websocket: WebSocket):
         if websocket in self.active_connections:
@@ -105,7 +101,6 @@ class CityRequest(BaseModel):
 class ControlRequest(BaseModel):
     action: str 
 
-# --- ROTAS HTTP ---
 @app.get("/")
 def health_check():
     if sys_logger: sys_logger.info("Health Check OK.")
@@ -121,7 +116,6 @@ def generate_and_save(req: CityRequest):
         if sys_logger: sys_logger.error(f"Erro Generator: {e}")
         raise HTTPException(status_code=400, detail=str(e))
     
-    # Lógica simplificada de salvar cenário no DB
     if supabase:
         try:
             res = supabase.table("scenarios").insert({
@@ -148,13 +142,10 @@ def control_simulation(req: ControlRequest):
         return {"status": "success"}
     raise HTTPException(status_code=400)
 
-# --- WEBSOCKET ---
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    # 1. Tenta conectar (Ativo ou Fila)
     is_authorized = await manager.connect(websocket)
     
-    # 2. Loop de Espera na Fila
     if not is_authorized:
         try:
             while websocket in manager.queue:
@@ -168,7 +159,6 @@ async def websocket_endpoint(websocket: WebSocket):
             manager.disconnect(websocket)
             return
 
-    # 3. Inicia Simulação
     global simulation_running
     simulation_running = True
     if sys_logger: sys_logger.info("Simulacao Iniciada.")
@@ -200,14 +190,13 @@ async def websocket_endpoint(websocket: WebSocket):
             for veh_id in traci.vehicle.getIDList():
                 x, y = traci.vehicle.getPosition(veh_id)
                 lon, lat = traci.simulation.convertGeo(x, y)
-                # DADOS CRÍTICOS PARA O FRONTEND
                 vehicles.append({
                     "id": veh_id, 
                     "lat": lat, 
                     "lon": lon, 
                     "angle": traci.vehicle.getAngle(veh_id),
-                    "speed": traci.vehicle.getSpeed(veh_id),      # m/s
-                    "distance": traci.vehicle.getDistance(veh_id) # metros
+                    "speed": traci.vehicle.getSpeed(veh_id),
+                    "distance": traci.vehicle.getDistance(veh_id)
                 })
 
             tls_states = {tls: traci.trafficlight.getRedYellowGreenState(tls) for tls in traci.trafficlight.getIDList()}
@@ -219,7 +208,6 @@ async def websocket_endpoint(websocket: WebSocket):
                 "status": "running"
             })
 
-            # Salva logs no Supabase a cada 10 steps
             if step_count % 10 == 0 and ai_logs and current_scenario_id and supabase:
                 for log in ai_logs:
                     log['scenario_id'] = current_scenario_id
