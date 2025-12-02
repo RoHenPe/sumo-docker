@@ -8,8 +8,10 @@ from pydantic import BaseModel
 from supabase import create_client, Client
 from github import Github
 
+# Logger
 from logger_utils import setup_global_logging
 
+# Imports Opcionais
 try:
     import osmnx as ox
 except ImportError:
@@ -26,6 +28,7 @@ except ImportError:
         def set_ai_status(self, enabled): pass
         def step(self): return []
 
+# Configurações
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
@@ -35,6 +38,10 @@ os.makedirs(SCENARIO_DIR, exist_ok=True)
 
 app = FastAPI()
 
+# --- CORREÇÃO OBRIGATÓRIA PARA O DOCKER ---
+socket_app = app 
+# ------------------------------------------
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -42,6 +49,7 @@ app.add_middleware(
     allow_headers=["*"]
 )
 
+# Inicializa Logs
 sys_logger = None
 try:
     if SUPABASE_URL and SUPABASE_KEY:
@@ -58,12 +66,12 @@ traffic_ai = TrafficAI(ai_enabled=False)
 simulation_running = False 
 current_scenario_id = None
 
-# --- GERENCIADOR DE FILA (LIMITE DE 1) ---
+# --- GERENCIADOR DE CONEXÕES (FILA) ---
 class ConnectionManager:
     def __init__(self):
         self.active_connections: list[WebSocket] = []
         self.queue: list[WebSocket] = []
-        self.MAX_SIMULATIONS = 1  # <--- ALTERADO PARA 1
+        self.MAX_SIMULATIONS = 1  # Limite de 1 simulação
 
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
@@ -73,8 +81,8 @@ class ConnectionManager:
         else:
             self.queue.append(websocket)
             pos = len(self.queue)
-            await websocket.send_json({"status": "queue", "position": pos, "message": "Servidor ocupado (1 usuário por vez). Aguarde..."})
-            return False
+            await websocket.send_json({"status": "queue", "position": pos, "message": "Servidor ocupado. Aguarde na fila."})
+            return False 
 
     def disconnect(self, websocket: WebSocket):
         if websocket in self.active_connections:
@@ -101,6 +109,7 @@ class CityRequest(BaseModel):
 class ControlRequest(BaseModel):
     action: str 
 
+# --- ROTAS HTTP ---
 @app.get("/")
 def health_check():
     if sys_logger: sys_logger.info("Health Check OK.")
@@ -142,6 +151,7 @@ def control_simulation(req: ControlRequest):
         return {"status": "success"}
     raise HTTPException(status_code=400)
 
+# --- WEBSOCKET ---
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     is_authorized = await manager.connect(websocket)

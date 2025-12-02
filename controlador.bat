@@ -7,21 +7,27 @@ color 0F
 set "BASE_DIR=%~dp0"
 if "%BASE_DIR:~-1%"=="\" set "BASE_DIR=%BASE_DIR:~0,-1%"
 
+:: --- CAMINHOS ---
 set "VENV_DIR=%BASE_DIR%\sumo-backend\venv"
 set "VENV_PYTHON=%VENV_DIR%\Scripts\python.exe"
 set "VENV_PIP=%VENV_DIR%\Scripts\pip.exe"
 set "REQUIREMENTS_PATH=%BASE_DIR%\sumo-backend\requirements.txt"
 set "BOOT_LOGGER=%BASE_DIR%\boot_logger.py"
 set "DB_PATCHER=%BASE_DIR%\db_patcher.py"
-set "SYNC_SCRIPT=%BASE_DIR%\vercel_sync.py"
+set "SYNC_SCRIPT=%BASE_DIR%\sumo-backend\vercel_sync.py"
 set "DOCKER_EXE=C:\Program Files\Docker\Docker\Docker Desktop.exe"
 set "LOG_DIR=%BASE_DIR%\scenarios\logs"
 set "LOCAL_LOG=%LOG_DIR%\controlador.log"
-set "FRONT_PATH=%BASE_DIR%\site-web"
+set "URL_FILE=%BASE_DIR%\ngrok_url.txt"
+
+:: Caminho do Frontend fixo
+set "FRONT_PATH=C:\UNIP\site-web"
 
 if not exist "%LOG_DIR%" mkdir "%LOG_DIR%"
 echo [INIT] Started > "%LOCAL_LOG%"
+if exist "%URL_FILE%" del "%URL_FILE%"
 
+:: --- CHECAGENS ---
 python --version >nul 2>&1
 if %errorlevel% neq 0 (
     cls
@@ -32,11 +38,6 @@ if %errorlevel% neq 0 (
 
 if not exist "%VENV_DIR%" (
     python -m venv "%VENV_DIR%" >> "%LOCAL_LOG%" 2>&1
-    if errorlevel 1 (
-        echo [ERRO] Falha ao criar Venv.
-        pause
-        exit
-    )
 )
 
 "%VENV_PYTHON%" -m pip install --upgrade pip pyngrok supabase python-dotenv >> "%LOCAL_LOG%" 2>&1
@@ -74,11 +75,6 @@ echo      patch_file(r"%BASE_DIR%\sumo-backend\logger_utils.py", "application_lo
 if exist "%VENV_PYTHON%" "%VENV_PYTHON%" "%DB_PATCHER%" >> "%LOCAL_LOG%" 2>&1
 
 :MAIN_MENU
-set "st_wait=[ ]"
-set "st_work=[..]"
-set "st_ok=[OK]"
-set "st_err=[X]"
-
 cls
 echo.
 echo =========================================
@@ -99,147 +95,130 @@ if "%opt%"=="4" exit
 goto MAIN_MENU
 
 :SEQ_START
-set "s1=%st_wait%" & set "s2=%st_wait%" & set "s3=%st_wait%" & set "s4=%st_wait%" & set "s5=%st_wait%" & set "s6=%st_wait%"
 call :REGISTER_LOG "INFO" "START BACKEND SEQUENCE"
 
-set "s1=%st_work%" & set "msg=Verificando Venv..."
-call :DRAW_START
-if exist "%VENV_PYTHON%" (
-    set "s1=%st_ok%"
-) else (
-    set "s1=%st_err%" & set "msg=Erro Venv"
-    goto START_FAIL
+if not exist "%VENV_PYTHON%" (
+    echo [ERRO] Venv nao encontrado.
+    pause
+    goto MAIN_MENU
 )
 
-set "s2=%st_work%" & set "msg=Verificando Conexao..."
-call :DRAW_START
-curl -s --head https://supabase.com >nul
+docker info >nul 2>&1
 if %errorlevel% neq 0 (
-    set "s2=%st_err%" & set "msg=Sem Internet"
-    goto START_FAIL
+    echo [INFO] Iniciando Docker...
+    start "" "%DOCKER_EXE%"
+    :WAIT_DOCKER
+    timeout /t 5 /nobreak >nul
+    docker info >nul 2>&1
+    if %errorlevel% neq 0 goto WAIT_DOCKER
 )
-set "s2=%st_ok%"
 
-set "s3=%st_work%" & set "msg=Verificando Docker..."
-call :DRAW_START
-docker info >nul 2>&1
-if %errorlevel% equ 0 goto DOCKER_RUNNING
+echo [INFO] Limpando processos antigos...
+docker-compose -f "%BASE_DIR%\docker-compose.yml" down --remove-orphans >> "%LOCAL_LOG%" 2>&1
+taskkill /F /IM ngrok.exe >nul 2>&1
+if exist "%URL_FILE%" del "%URL_FILE%"
 
-set "msg=Iniciando Docker Desktop..."
-call :DRAW_START
-start "" "%DOCKER_EXE%"
-:WAIT_DOCKER_LOOP
-timeout /t 5 /nobreak >nul
-docker info >nul 2>&1
-if %errorlevel% neq 0 goto WAIT_DOCKER_LOOP
-
-:DOCKER_RUNNING
-set "s3=%st_ok%"
-
-set "s4=%st_work%" & set "msg=Subindo Containers..."
-call :DRAW_START
+echo [INFO] Subindo containers...
 docker-compose -f "%BASE_DIR%\docker-compose.yml" up -d --build >> "%LOCAL_LOG%" 2>&1
 if %errorlevel% neq 0 (
-    set "s4=%st_err%" & set "msg=Erro Docker Build"
-    goto START_FAIL
+    echo [ERRO] Falha no Docker.
+    pause
+    goto MAIN_MENU
 )
-set "s4=%st_ok%"
 
-set "s5=%st_work%" & set "msg=Aguardando API..."
-call :DRAW_START
+echo [INFO] Aguardando API...
 set /a try=0
 :CHECK_API
 set /a try+=1
-set "msg=Aguardando API (%try%/60)..."
-call :DRAW_START
 timeout /t 3 /nobreak >nul
-:: USA 127.0.0.1 em vez de localhost
 curl -s http://127.0.0.1:5000/ >nul
 if %errorlevel% equ 0 goto API_OK
 if %try% geq 60 (
-    set "s5=%st_err%" & set "msg=TIMEOUT API"
-    goto START_FAIL
+    echo [ERRO] Timeout API.
+    docker logs sumo-backend
+    pause
+    goto MAIN_MENU
 )
 goto CHECK_API
-:API_OK
-set "s5=%st_ok%"
 
-set "s6=%st_work%" & set "msg=Iniciando Tunel..."
-call :DRAW_START
+:API_OK
+echo [INFO] API Online. Iniciando Tunel...
 taskkill /FI "WINDOWTITLE eq FLUXUS TUNNEL" /F >nul 2>&1
+
 if not exist "%SYNC_SCRIPT%" (
-    set "s6=%st_err%" & set "msg=Script Sync Ausente"
-    goto START_FAIL
+    echo [ERRO] Script de sync nao encontrado.
+    pause
+    goto MAIN_MENU
 )
-start "FLUXUS TUNNEL" /min "%VENV_PYTHON%" "%SYNC_SCRIPT%"
-set "s6=%st_ok%"
-set "msg=SISTEMA ONLINE."
-call :DRAW_START
+
+:: Inicia o Tunel (Janela Visível)
+start "FLUXUS TUNNEL" "%VENV_PYTHON%" "%SYNC_SCRIPT%"
 call :REGISTER_LOG "INFO" "Sistema Online"
 
 echo.
-echo [ENTER] Voltar ao Menu
+echo [AGUARDE] Obtendo Link Publico...
+:WAIT_URL
+timeout /t 2 /nobreak >nul
+if exist "%URL_FILE%" goto SHOW_URL
+goto WAIT_URL
+
+:SHOW_URL
+set /p PUBLIC_URL=<"%URL_FILE%"
+echo.
+echo ==================================================
+echo  SISTEMA ONLINE!
+echo ==================================================
+echo.
+echo  Link Publico: %PUBLIC_URL%
+echo  (O Supabase foi atualizado automaticamente)
+echo.
+echo ==================================================
+echo.
+echo [ENTER] Voltar ao Menu.
 pause >nul
 goto MAIN_MENU
 
 :SEQ_FRONT_START
-cls
-echo.
-echo [2] INICIANDO FRONT-END...
 call :REGISTER_LOG "INFO" "Start Frontend"
+
 if not exist "%FRONT_PATH%" (
-    echo [ERRO] Pasta nao encontrada
+    echo [ERRO] Pasta nao encontrada: %FRONT_PATH%
     pause
     goto MAIN_MENU
 )
+
 taskkill /FI "WINDOWTITLE eq FRONT-END SERVER" /F >nul 2>&1
+echo [INFO] Abrindo novo terminal para o Frontend...
 cd /d "%FRONT_PATH%"
-if not exist "node_modules" call npm install
+
+:: CORREÇÃO: Removidos parenteses do echo para evitar erro de sintaxe
+if not exist "node_modules" (
+    echo [INFO] Instalando dependencias do Node...
+    call npm install
+)
+
 start "FRONT-END SERVER" cmd /k npm run dev
+
 cd /d "%BASE_DIR%"
 echo [OK] Front-end iniciado.
 pause
 goto MAIN_MENU
 
 :SEQ_STOP
-cls
-echo.
-echo PARANDO TUDO...
 call :REGISTER_LOG "WARNING" "Stop All"
 docker-compose stop >> "%LOCAL_LOG%" 2>&1
-docker-compose down >> "%LOCAL_LOG%" 2>&1
+docker-compose down --remove-orphans >> "%LOCAL_LOG%" 2>&1
 taskkill /F /IM "Docker Desktop.exe" >nul 2>&1
 taskkill /F /IM "com.docker.backend.exe" >nul 2>&1
 taskkill /F /IM "dockerd.exe" >nul 2>&1
+taskkill /F /IM ngrok.exe >nul 2>&1
 taskkill /FI "WINDOWTITLE eq FLUXUS TUNNEL" /F >nul 2>&1
 taskkill /FI "WINDOWTITLE eq FRONT-END SERVER" /F >nul 2>&1
 taskkill /f /im node.exe >nul 2>&1
+if exist "%URL_FILE%" del "%URL_FILE%"
 echo [OK] Parado.
 timeout /t 2 >nul
 goto MAIN_MENU
-
-:START_FAIL
-call :DRAW_START
-echo.
-echo [ERRO] Falha. Verifique %LOCAL_LOG%
-powershell -command "Get-Content '%LOCAL_LOG%' -Tail 10"
-pause
-goto MAIN_MENU
-
-:DRAW_START
-cls
-echo.
-echo      [1] INICIALIZACAO BACKEND
-echo      ------------------------------
-echo      %s1%  1. Venv
-echo      %s2%  2. Internet
-echo      %s3%  3. Docker
-echo      %s4%  4. Containers
-echo      %s5%  5. API Local
-echo      %s6%  6. Tunel Remoto
-echo      ------------------------------
-echo Status: %msg%
-exit /b
 
 :REGISTER_LOG
 echo [%TIME%] [%~1] %~2 >> "%LOCAL_LOG%"

@@ -5,30 +5,32 @@ from dotenv import load_dotenv
 from supabase import create_client
 from pyngrok import ngrok, conf
 
-# Carrega .env local
 load_dotenv()
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-NGROK_AUTH_TOKEN = os.getenv("NGROK_AUTH_TOKEN") # Opcional, mas recomendado
+
+# CORREÇÃO: Nome exato conforme seu .env
+NGROK_AUTH_TOKEN = os.getenv("NGROK_AUTHTOKEN") 
 
 if not SUPABASE_URL or not SUPABASE_KEY:
-    print("[ERRO] Faltam credenciais do Supabase no .env")
+    print("[ERRO] Supabase Credentials missing.")
     sys.exit(1)
 
 def update_config(url_http, url_ws):
     try:
         supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-        # Atualiza HTTP
+        # Atualiza HTTP e Websocket no banco para a Vercel ler
         supabase.table("system_config").upsert({"key": "backend_url", "value": url_http}, on_conflict="key").execute()
-        # Atualiza WebSocket
         supabase.table("system_config").upsert({"key": "backend_ws", "value": url_ws}, on_conflict="key").execute()
-        print(f"[SYNC] URLs atualizadas:\nHTTP: {url_http}\nWS: {url_ws}")
+        print(f"[SYNC] URLs atualizadas no Supabase:\nHTTP: {url_http}\nWS: {url_ws}")
     except Exception as e:
-        print(f"[ERRO] Falha Supabase: {e}")
+        print(f"[ERRO] Falha ao atualizar Supabase: {e}")
 
 def main():
     if NGROK_AUTH_TOKEN:
         conf.get_default().auth_token = NGROK_AUTH_TOKEN
+    else:
+        print("[AVISO] Token do Ngrok não encontrado no .env!")
     
     print("[TUNNEL] Iniciando Ngrok na porta 5000...")
     try:
@@ -45,7 +47,7 @@ def main():
     except KeyboardInterrupt:
         ngrok.kill()
     except Exception as e:
-        print(f"[CRITICAL] Erro: {e}")
+        print(f"[CRITICAL] Erro no Ngrok: {e}")
 
 if __name__ == "__main__":
     main()
