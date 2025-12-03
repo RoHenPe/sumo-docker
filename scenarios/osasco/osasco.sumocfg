@@ -1,0 +1,1 @@
+<configuration><input><net-file value="simulacao.net.xml"/><route-files value="simulacao.rou.xml"/></input><time><begin value="0"/><end value="1000"/></time></configuration>
